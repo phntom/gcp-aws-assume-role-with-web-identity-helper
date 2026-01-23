@@ -124,6 +124,10 @@ func assumeRole(ctx context.Context, idToken, roleArn, roleSessionName string) (
 		return nil, fmt.Errorf("failed to load aws config: %w", err)
 	}
 
+	if cfg.Region == "" {
+		cfg.Region = "us-east-1"
+	}
+
 	stsClient := sts.NewFromConfig(cfg)
 
 	input := &sts.AssumeRoleWithWebIdentityInput{

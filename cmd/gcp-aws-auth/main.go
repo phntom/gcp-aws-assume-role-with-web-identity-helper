@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"google.golang.org/api/idtoken"
@@ -124,10 +125,6 @@ func assumeRole(ctx context.Context, idToken, roleArn, roleSessionName string) (
 		return nil, fmt.Errorf("failed to load aws config: %w", err)
 	}
 
-	if cfg.Region == "" {
-		cfg.Region = "us-east-1"
-	}
-
 	stsClient := sts.NewFromConfig(cfg)
 
 	input := &sts.AssumeRoleWithWebIdentityInput{
@@ -137,6 +134,14 @@ func assumeRole(ctx context.Context, idToken, roleArn, roleSessionName string) (
 	}
 
 	resp, err := stsClient.AssumeRoleWithWebIdentity(ctx, input)
+	if err != nil {
+		if strings.Contains(err.Error(), "Invalid Configuration: Missing Region") {
+			cfg.Region = "us-east-1"
+			stsClient = sts.NewFromConfig(cfg)
+			resp, err = stsClient.AssumeRoleWithWebIdentity(ctx, input)
+		}
+	}
+
 	if err != nil {
 		return nil, fmt.Errorf("AssumeRoleWithWebIdentity failed: %w", err)
 	}

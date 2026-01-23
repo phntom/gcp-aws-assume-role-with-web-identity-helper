@@ -27,6 +27,8 @@ type CredentialProcessOutput struct {
 	Expiration      time.Time `json:"Expiration"`
 }
 
+var version = "dev"
+
 func main() {
 	// Ensure logs go to stderr to avoid interfering with JSON output on stdout
 	log.SetOutput(os.Stderr)
@@ -36,12 +38,19 @@ func main() {
 		roleArn         string
 		roleSessionName string
 		impersonateSA   string
+		showVersion     bool
 	)
 
 	flag.StringVar(&roleArn, "role-arn", "", "The ARN of the AWS IAM Role to assume")
 	flag.StringVar(&roleSessionName, "role-session-name", "", "The session name for the assumed role")
 	flag.StringVar(&impersonateSA, "impersonate-service-account", "", "Optional: The GCP Service Account email to impersonate")
+	flag.BoolVar(&showVersion, "version", false, "Print the version and exit")
 	flag.Parse()
+
+	if showVersion {
+		fmt.Println(version)
+		os.Exit(0)
+	}
 
 	if roleArn == "" || roleSessionName == "" {
 		log.Fatal("Error: --role-arn and --role-session-name are required.")

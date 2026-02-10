@@ -53,3 +53,19 @@ echo "Creating GitHub release..."
 gh release create "$TAG_NAME" "$DIST_DIR"/* --notes "$RELEASE_NOTES" --title "$TAG_NAME"
 
 echo "Release $TAG_NAME published successfully!"
+
+# Docker multi-arch build and push
+echo "Building and pushing Docker image..."
+
+DOCKER_IMAGE="phntom/gcp-aws-assume-role-with-web-identity-helper"
+
+docker buildx create --use --name multiarch-builder 2>/dev/null || docker buildx use multiarch-builder
+
+docker buildx build \
+    --platform linux/amd64,linux/arm64,linux/arm \
+    --tag "$DOCKER_IMAGE:$TAG_NAME" \
+    --tag "$DOCKER_IMAGE:latest" \
+    --push \
+    .
+
+echo "Docker image $DOCKER_IMAGE:$TAG_NAME pushed successfully!"

@@ -39,12 +39,14 @@ func main() {
 		roleArn         string
 		roleSessionName string
 		impersonateSA   string
+		audience        string
 		showVersion     bool
 	)
 
 	flag.StringVar(&roleArn, "role-arn", "", "The ARN of the AWS IAM Role to assume")
 	flag.StringVar(&roleSessionName, "role-session-name", "", "The session name for the assumed role")
 	flag.StringVar(&impersonateSA, "impersonate-service-account", "", "Optional: The GCP Service Account email to impersonate")
+	flag.StringVar(&audience, "audience", "sts.amazonaws.com", "The audience for the GCP ID token")
 	flag.BoolVar(&showVersion, "version", false, "Print the version and exit")
 	flag.Parse()
 
@@ -58,7 +60,6 @@ func main() {
 	}
 
 	ctx := context.Background()
-	audience := "sts.amazonaws.com"
 
 	// Step 1: Get GCP ID Token
 	var token string

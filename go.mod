@@ -1,4 +1,4 @@
-module gcp-aws-auth
+module github.com/phntom/gcp-aws-assume-role-with-web-identity-helper
 
 go 1.24.3
 

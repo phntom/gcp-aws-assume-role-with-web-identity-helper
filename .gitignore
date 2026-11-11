@@ -31,5 +31,8 @@ go.work.sum
 # .idea/
 # .vscode/
 dist/
-gcp-aws-auth
-main
+/gcp-aws-auth
+/gcp-aws-auth-*
+/main
+/cmd/gcp-aws-auth/gcp-aws-auth
+/cmd/gcp-aws-auth/gcp-aws-auth.exe

@@ -1,0 +1,69 @@
+version: "2"
+
+run:
+  tests: true
+
+linters:
+  # standard = errcheck, govet, ineffassign, staticcheck, unused
+  default: standard
+  enable:
+    - bodyclose
+    - errorlint
+    - gocritic
+    - gosec
+    - misspell
+    - noctx
+    - revive
+    - nilerr
+    - unconvert
+    - usestdlibvars
+    - thelper
+    - contextcheck
+  settings:
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment # readability of small structs matters more here
+    staticcheck:
+      checks: ["all"]
+    gocritic:
+      enabled-tags: [diagnostic, performance, style]
+    revive:
+      rules:
+        - name: blank-imports
+        - name: context-as-argument
+          arguments:
+            # test helpers conventionally take *testing.T first
+            - allow-types-before: "*testing.T"
+        - name: context-keys-type
+        - name: dot-imports
+        - name: error-return
+        - name: error-strings
+        - name: error-naming
+        - name: exported
+        - name: increment-decrement
+        - name: var-naming
+        - name: var-declaration
+        - name: package-comments
+        - name: range
+        - name: receiver-naming
+        - name: time-naming
+        - name: unexported-return
+        - name: indent-error-flow
+        - name: errorf
+        - name: empty-block
+        - name: superfluous-else
+        - name: unused-parameter
+        - name: unreachable-code
+        - name: redefines-builtin-id
+    misspell:
+      locale: US
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/phntom/gcp-aws-assume-role-with-web-identity-helper

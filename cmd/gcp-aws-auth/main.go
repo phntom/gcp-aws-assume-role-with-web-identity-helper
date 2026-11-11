@@ -1,160 +1,58 @@
+// Command gcp-aws-auth is an AWS credential_process helper. It obtains a
+// Google OIDC ID token (from Application Default Credentials, the GCE metadata
+// server, or by impersonating a service account) and exchanges it for
+// temporary AWS credentials with STS AssumeRoleWithWebIdentity. The
+// credentials are printed on stdout in the credential_process JSON format.
 package main
 
 import (
 	"context"
-	"encoding/json"
-	"flag"
-	"fmt"
-	"log"
 	"os"
-	"strings"
-	"time"
-
-	"google.golang.org/api/idtoken"
-	"google.golang.org/api/impersonate"
-
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/service/sts"
-	"github.com/aws/aws-sdk-go-v2/service/sts/types"
+	"os/signal"
+	"runtime/debug"
+	"syscall"
 )
 
-// CredentialProcessOutput matches the format expected by AWS credential_process
-type CredentialProcessOutput struct {
-	Version         int       `json:"Version"`
-	AccessKeyId     string    `json:"AccessKeyId"`
-	SecretAccessKey string    `json:"SecretAccessKey"`
-	SessionToken    string    `json:"SessionToken"`
-	Expiration      time.Time `json:"Expiration"`
-}
-
+// version is injected at build time with -ldflags "-X main.version=<tag>".
 var version = "dev"
 
 func main() {
-	// Ensure logs go to stderr to avoid interfering with JSON output on stdout
-	log.SetOutput(os.Stderr)
-	log.SetFlags(0)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	code := run(ctx, os.Args[1:], os.Stdout, os.Stderr, productionDeps())
+	stop()
+	os.Exit(code)
+}
 
-	var (
-		roleArn         string
-		roleSessionName string
-		impersonateSA   string
-		audience        string
-		showVersion     bool
-	)
-
-	flag.StringVar(&roleArn, "role-arn", "", "The ARN of the AWS IAM Role to assume")
-	flag.StringVar(&roleSessionName, "role-session-name", "", "The session name for the assumed role")
-	flag.StringVar(&impersonateSA, "impersonate-service-account", "", "Optional: The GCP Service Account email to impersonate")
-	flag.StringVar(&audience, "audience", "sts.amazonaws.com", "The audience for the GCP ID token")
-	flag.BoolVar(&showVersion, "version", false, "Print the version and exit")
-	flag.Parse()
-
-	if showVersion {
-		fmt.Println(version)
-		os.Exit(0)
-	}
-
-	if roleArn == "" || roleSessionName == "" {
-		log.Fatal("Error: --role-arn and --role-session-name are required.")
-	}
-
-	ctx := context.Background()
-
-	// Step 1: Get GCP ID Token
-	var token string
-	var err error
-
-	if impersonateSA != "" {
-		token, err = getImpersonatedIDToken(ctx, impersonateSA, audience)
-	} else {
-		token, err = getDefaultIDToken(ctx, audience)
-	}
-
-	if err != nil {
-		log.Fatalf("Failed to get GCP ID token: %v", err)
-	}
-
-	// Step 2: Assume Role with Web Identity
-	creds, err := assumeRole(ctx, token, roleArn, roleSessionName)
-	if err != nil {
-		log.Fatalf("Failed to assume role: %v", err)
-	}
-
-	// Step 3: Output JSON
-	output := CredentialProcessOutput{
-		Version:         1,
-		AccessKeyId:     *creds.AccessKeyId,
-		SecretAccessKey: *creds.SecretAccessKey,
-		SessionToken:    *creds.SessionToken,
-		Expiration:      *creds.Expiration,
-	}
-
-	encoder := json.NewEncoder(os.Stdout)
-	encoder.SetIndent("", "  ") // Pretty print for readability, though not strictly required
-	if err := encoder.Encode(output); err != nil {
-		log.Fatalf("Failed to write output: %v", err)
+// productionDeps wires the real Google and AWS implementations.
+func productionDeps() deps {
+	g := googleTokens{}
+	a := stsAssumer{}
+	return deps{
+		defaultIDToken:      g.defaultIDToken,
+		impersonatedIDToken: g.impersonatedIDToken,
+		assumeRole:          a.assumeRole,
 	}
 }
 
-func getDefaultIDToken(ctx context.Context, audience string) (string, error) {
-	ts, err := idtoken.NewTokenSource(ctx, audience)
-	if err != nil {
-		return "", fmt.Errorf("idtoken.NewTokenSource: %w", err)
-	}
-
-	tok, err := ts.Token()
-	if err != nil {
-		return "", fmt.Errorf("failed to fetch token: %w", err)
-	}
-	return tok.AccessToken, nil
+// versionString returns the version injected by the release build. Otherwise
+// it returns the main module version that the Go toolchain recorded in the
+// build info: for a build from a git checkout that is a VCS pseudo-version
+// such as v0.0.0-20260210103840-85075da9346e+dirty (this repository's tags
+// have no "v" prefix, so they do not become module versions). It returns
+// "dev" when no version was recorded.
+func versionString() string {
+	info, ok := debug.ReadBuildInfo()
+	return resolveVersion(version, info, ok)
 }
 
-func getImpersonatedIDToken(ctx context.Context, targetPrincipal string, audience string) (string, error) {
-	ts, err := impersonate.IDTokenSource(ctx, impersonate.IDTokenConfig{
-		TargetPrincipal: targetPrincipal,
-		Audience:        audience,
-		IncludeEmail:    true,
-	})
-	if err != nil {
-		return "", fmt.Errorf("impersonate.IDTokenSource: %w", err)
+func resolveVersion(injected string, info *debug.BuildInfo, ok bool) string {
+	if injected != "" && injected != "dev" {
+		return injected
 	}
-
-	tok, err := ts.Token()
-	if err != nil {
-		return "", fmt.Errorf("failed to fetch impersonated token: %w", err)
-	}
-	return tok.AccessToken, nil
-}
-
-func assumeRole(ctx context.Context, idToken, roleArn, roleSessionName string) (*types.Credentials, error) {
-	// Load default config to get region and other defaults.
-	// We don't need credentials in the config since we are using WebIdentity.
-	cfg, err := config.LoadDefaultConfig(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load aws config: %w", err)
-	}
-
-	stsClient := sts.NewFromConfig(cfg)
-
-	input := &sts.AssumeRoleWithWebIdentityInput{
-		RoleArn:          aws.String(roleArn),
-		RoleSessionName:  aws.String(roleSessionName),
-		WebIdentityToken: aws.String(idToken),
-	}
-
-	resp, err := stsClient.AssumeRoleWithWebIdentity(ctx, input)
-	if err != nil {
-		if strings.Contains(err.Error(), "Invalid Configuration: Missing Region") {
-			cfg.Region = "us-east-1"
-			stsClient = sts.NewFromConfig(cfg)
-			resp, err = stsClient.AssumeRoleWithWebIdentity(ctx, input)
+	if ok && info != nil {
+		if v := info.Main.Version; v != "" && v != "(devel)" {
+			return v
 		}
 	}
-
-	if err != nil {
-		return nil, fmt.Errorf("AssumeRoleWithWebIdentity failed: %w", err)
-	}
-
-	return resp.Credentials, nil
+	return "dev"
 }

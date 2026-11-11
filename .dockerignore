@@ -1,0 +1,7 @@
+# Allow-list: go.mod, go.sum, LICENSE and the non-test Go sources under cmd/.
+*
+!go.mod
+!go.sum
+!LICENSE
+!cmd/**/*.go
+cmd/**/*_test.go

@@ -467,6 +467,19 @@ type failingWriter struct{}
 
 func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("broken pipe") }
 
+// blockingWriter records that the credential write started, then blocks like
+// a full pipe, socket or other Writer whose Write ignores the context.
+type blockingWriter struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (w blockingWriter) Write(b []byte) (int, error) {
+	close(w.entered)
+	<-w.release
+	return len(b), nil
+}
+
 func TestRunWriteError(t *testing.T) {
 	var errb bytes.Buffer
 	code := run(t.Context(), baseArgs(), failingWriter{}, &errb, newFakeDeps().deps())
@@ -474,6 +487,27 @@ func TestRunWriteError(t *testing.T) {
 		t.Errorf("exit %d, stderr %q", code, errb.String())
 	}
 	assertNoSecrets(t, errb.String())
+}
+
+func TestRunTimeoutBoundsCredentialWrite(t *testing.T) {
+	stdout := blockingWriter{entered: make(chan struct{}), release: make(chan struct{})}
+	t.Cleanup(func() { close(stdout.release) })
+	var errb bytes.Buffer
+	done := make(chan int, 1)
+	go func() {
+		done <- run(t.Context(), baseArgs("--timeout", "50ms"), stdout, &errb, newFakeDeps().deps())
+	}()
+
+	select {
+	case <-stdout.entered:
+	case <-time.After(hangLimit):
+		t.Fatal("credential write never started")
+	}
+	code := <-done
+	want := "gcp-aws-auth: timed out after 50ms while writing the credential document (see --timeout)\n"
+	if code != 1 || errb.String() != want {
+		t.Errorf("exit %d, stderr %q, want 1 and %q", code, errb.String(), want)
+	}
 }
 
 // hangLimit only detects a run that never returns; no test asserts timing

@@ -39,9 +39,10 @@ type deps struct {
 }
 
 const (
-	stageDefaultToken = "fetching the Google ID token"
-	stageImpersonated = "fetching the impersonated Google ID token"
-	stageSTS          = "calling STS AssumeRoleWithWebIdentity"
+	stageDefaultToken  = "fetching the Google ID token"
+	stageImpersonated  = "fetching the impersonated Google ID token"
+	stageSTS           = "calling STS AssumeRoleWithWebIdentity"
+	stageWritingOutput = "writing the credential document"
 )
 
 // timeoutError is the cancellation cause recorded when --timeout expires.
@@ -104,15 +105,37 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, d deps) i
 		return reportCancelled(ctx, stderr, stage.Load().(string))
 	}
 
+	stage.Store(stageWritingOutput)
+	writeDone := make(chan error, 1)
+	go func() {
+		writeDone <- writeCredentialDocument(stdout, &out)
+	}()
+	select {
+	case err := <-writeDone:
+		if err != nil {
+			warnf(stderr, "%s: %v\n", progName, err)
+			return 1
+		}
+		return 0
+	case <-ctx.Done():
+		return reportCancelled(ctx, stderr, stageWritingOutput)
+	}
+}
+
+// writeCredentialDocument emits the credential JSON in one call. It runs in a
+// goroutine because a Writer can block just like a network call.
+func writeCredentialDocument(w io.Writer, out *credentialProcessOutput) error {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetIndent("", "  ")
 	// Emitting these credentials on stdout is the purpose of the program.
 	if err := enc.Encode(out); err != nil { //nolint:gosec // G117: the credential document is the intended output
-		warnf(stderr, "%s: encoding credentials: %v\n", progName, err)
-		return 1
+		return fmt.Errorf("encoding credentials: %w", err)
 	}
-	return writeStdout(stdout, stderr, buf.Bytes(), "credentials")
+	if _, err := w.Write(buf.Bytes()); err != nil {
+		return fmt.Errorf("writing credentials to stdout: %w", err)
+	}
+	return nil
 }
 
 // writeStdout writes b in one call and reports a failed write as exit 1.

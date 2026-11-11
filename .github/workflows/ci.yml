@@ -1,0 +1,125 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A new push to a pull request cancels that pull request's previous run.
+# Every other run gets its own group (the run id), so runs on main are never
+# cancelled or held as pending.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Use exactly the toolchain setup-go installed from go.mod; never download another.
+  GOTOOLCHAIN: local
+
+jobs:
+  test:
+    name: Tidy, vet, test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Check that go.mod and go.sum are tidy
+        run: go mod tidy -diff
+      - name: go vet
+        run: go vet ./...
+      - name: go test (race detector, coverage)
+        run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
+      - name: Coverage summary
+        run: |
+          go tool cover -func=coverage.out | tail -n 1
+          {
+            echo '### Coverage'
+            echo '```'
+            go tool cover -func=coverage.out
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  lint:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.15.0
+
+  govulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
+  release-build:
+    name: Release build (all targets)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: ./release.sh --build-only
+        run: ./release.sh --build-only 0.0.0-ci
+      - name: Verify artifacts
+        run: |
+          ls -l dist
+          (cd dist && sha256sum -c checksums.txt)
+          test "$(dist/gcp-aws-auth-linux-amd64 --version)" = 0.0.0-ci
+
+  image:
+    name: Image build (no push)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Dockerfile GO_VERSION default must equal the go line of go.mod
+        run: |
+          mod="$(awk '$1 == "go" { print $2; exit }' go.mod)"
+          docker="$(sed -n 's/^ARG GO_VERSION=//p' Dockerfile)"
+          echo "go.mod: $mod  Dockerfile: $docker"
+          test -n "$mod" && test "$mod" = "$docker"
+      # The final stage runs `apk add` on each target platform.
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          platforms: arm64,arm
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build linux/amd64, linux/arm64, linux/arm
+        run: docker buildx build --platform linux/amd64,linux/arm64,linux/arm --build-arg VERSION=0.0.0-ci .
+      - name: Smoke-test the linux/amd64 image
+        run: |
+          docker buildx build --platform linux/amd64 --build-arg VERSION=0.0.0-ci --load --tag gcp-aws-auth:ci .
+          test "$(docker run --rm gcp-aws-auth:ci --version)" = 0.0.0-ci
+          docker run --rm --entrypoint sh gcp-aws-auth:ci -c \
+            'command -v update-ca-certificates && test -s /etc/ssl/certs/ca-certificates.crt && test -s /usr/share/licenses/gcp-aws-auth/LICENSE'
